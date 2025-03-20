@@ -109,11 +109,11 @@ interface JustTimelockInterface {
 }
 
 /**
- * @title JustAnalyticsHelper
+ * @title JustAnalyticsHelperUpgradeable
  * @notice Advanced analytics contract for comprehensive DAO governance metrics
  * @dev Focuses on proposal analytics, voter behavior, token distribution, and governance health
  */
-contract JustEnhancedAnalyticsHelper is
+contract JustAnalyticsHelperUpgradeable is
     Initializable,
     AccessControlEnumerableUpgradeable,
     PausableUpgradeable,
