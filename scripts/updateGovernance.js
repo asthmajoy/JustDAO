@@ -1,6 +1,6 @@
 // Governance Parameter Checker and Updater
 // Using ethers v6 to check and update all parameters in the JustGovernanceUpgradeable contract
-// Compatible with Hardhat, supporting localhost, Sepolia, and mainnet networks
+// Updated for proper Hardhat network detection
 
 const { ethers } = require('ethers');
 require('dotenv').config();
@@ -52,114 +52,120 @@ async function main() {
     console.log("JustGovernance Parameter Checker and Updater");
     console.log("=".repeat(60));
     
-    // Get network from Hardhat if available
-    let network, provider, wallet;
+    // Initialize variables
+    let provider, wallet, signer, network, governanceContract, governanceAddress;
     
-    // Check if running in a Hardhat environment
-    if (hre && hre.network) {
-      console.log(`Running in Hardhat environment on network: ${hre.network.name}`);
-      
-      // Use Hardhat's provider and signer
+    // *************************************************************
+    // IMPROVED HARDHAT DETECTION - Check if we're running in Hardhat
+    // *************************************************************
+    if (typeof hre !== 'undefined') {
+      console.log(`Detected Hardhat environment using network: ${hre.network.name}`);
       network = hre.network.name;
+      
+      // Use Hardhat's provider
       provider = hre.ethers.provider;
       
-      // Get signer from Hardhat
-      const [signer] = await hre.ethers.getSigners();
+      // Get first signer from Hardhat
+      [signer] = await hre.ethers.getSigners();
       wallet = signer;
       
-      console.log(`Using wallet: ${wallet.address}`);
-    } 
-    // Standalone mode (not in Hardhat)
+      console.log(`Using Hardhat provider for network: ${network}`);
+      console.log(`Using signer account: ${wallet.address}`);
+      
+      try {
+        // Try to get contract from deployments if available
+        if (hre.deployments) {
+          try {
+            const deployment = await hre.deployments.get("JustGovernanceUpgradeable");
+            governanceAddress = deployment.address;
+            console.log(`Found contract from deployments: ${governanceAddress}`);
+          } catch (e) {
+            console.log("No deployment found, will check .env file");
+          }
+        }
+      } catch (e) {
+        console.log("Hardhat deployments not available");
+      }
+    }
+    // Standalone mode - not running through Hardhat
     else {
       console.log("Running in standalone mode (not via Hardhat)");
       
-      // Verify the private key
-      const privateKey = process.env.PRIVATE_KEY;
-      if (!privateKey) {
-        throw new Error('PRIVATE_KEY not found in .env file');
-      }
-      
-      // Format the private key
-      const formattedPrivateKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
-      
-      // Determine network and provider
+      // Get network argument if provided
       const networkArg = process.argv.find((arg, index) => 
         arg === '--network' && index < process.argv.length - 1
       );
       
-      const networkName = networkArg ? 
+      network = networkArg ? 
         process.argv[process.argv.indexOf('--network') + 1] : 
         'sepolia';
       
-      console.log(`Network specified: ${networkName}`);
+      console.log(`Using network: ${network}`);
       
-      // Set up provider based on network
-      if (networkName === 'localhost' || networkName === 'local' || networkName === 'hardhat') {
+      // Initialize provider based on network
+      if (network === 'localhost' || network === 'local' || network === 'hardhat') {
         provider = new ethers.JsonRpcProvider('http://127.0.0.1:8545');
-        console.log('Using localhost provider');
+        console.log(`Using localhost provider at http://127.0.0.1:8545`);
       }
-      else if (networkName === 'sepolia') {
+      else if (network === 'sepolia') {
         if (process.env.SEPOLIA_RPC_URL) {
           provider = new ethers.JsonRpcProvider(process.env.SEPOLIA_RPC_URL);
-          console.log(`Using Sepolia RPC URL: ${process.env.SEPOLIA_RPC_URL}`);
+          console.log(`Using Sepolia RPC URL from .env`);
         } 
         else if (process.env.INFURA_PROJECT_ID) {
           provider = new ethers.InfuraProvider('sepolia', process.env.INFURA_PROJECT_ID);
           console.log('Using Infura for Sepolia network');
         }
         else {
-          throw new Error('No Sepolia provider configuration found in .env file');
+          throw new Error('No Sepolia provider configuration found. Add SEPOLIA_RPC_URL or INFURA_PROJECT_ID to .env file');
         }
       }
-      else if (networkName === 'mainnet') {
+      else if (network === 'mainnet') {
         if (process.env.MAINNET_RPC_URL) {
           provider = new ethers.JsonRpcProvider(process.env.MAINNET_RPC_URL);
-          console.log(`Using Mainnet RPC URL: ${process.env.MAINNET_RPC_URL}`);
+          console.log(`Using Mainnet RPC URL from .env`);
         } 
         else if (process.env.INFURA_PROJECT_ID) {
           provider = new ethers.InfuraProvider('mainnet', process.env.INFURA_PROJECT_ID);
           console.log('Using Infura for Mainnet');
         }
         else {
-          throw new Error('No Mainnet provider configuration found in .env file');
+          throw new Error('No Mainnet provider configuration found. Add MAINNET_RPC_URL or INFURA_PROJECT_ID to .env file');
         }
       }
       else {
-        throw new Error(`Unsupported network: ${networkName}`);
+        throw new Error(`Unsupported network: ${network}`);
       }
       
-      // Create wallet
+      // Setup wallet from private key
+      const privateKey = process.env.PRIVATE_KEY;
+      if (!privateKey) {
+        throw new Error('PRIVATE_KEY not found in .env file');
+      }
+      
+      const formattedPrivateKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
       wallet = new ethers.Wallet(formattedPrivateKey, provider);
-      network = networkName;
+      console.log(`Using wallet address: ${wallet.address}`);
     }
     
-    // Get network information
-    const chainId = (await provider.getNetwork()).chainId;
-    console.log(`Connected to network with chain ID: ${chainId}`);
-    
-    // Check wallet balance
-    const balance = await provider.getBalance(wallet.address);
-    console.log(`Wallet balance: ${ethers.formatEther(balance)} ETH`);
-    
-    if (balance === 0n) {
-      throw new Error(`Wallet has 0 ETH. Please fund this wallet on ${network} before continuing.`);
-    }
-    
-    // Get governance contract address - try both Hardhat and .env sources
-    let governanceAddress;
-    
-    // Try to get deployed contract address from Hardhat deployments if available
+    // Get network details and check balance
     try {
-      if (hre && hre.deployments) {
-        const deployment = await hre.deployments.get('JustGovernanceUpgradeable');
-        governanceAddress = deployment.address;
-        console.log(`Found governance contract from Hardhat deployments: ${governanceAddress}`);
+      const chainId = (await provider.getNetwork()).chainId;
+      console.log(`Connected to chain ID: ${chainId}`);
+      
+      const balance = await provider.getBalance(wallet.address);
+      console.log(`Wallet balance: ${ethers.formatEther(balance)} ETH`);
+      
+      // Only check balance for non-localhost networks
+      if (balance === 0n && network !== 'localhost' && network !== 'local' && network !== 'hardhat') {
+        throw new Error(`Wallet has 0 ETH. Please fund this wallet on ${network} before continuing.`);
       }
     } catch (error) {
-      console.log('No Hardhat deployments found, will check .env file');
+      console.log(`Error checking network or balance: ${error.message}`);
+      console.log("Continuing anyway - this might be normal for localhost development chains");
     }
     
-    // Fall back to .env file if not found in Hardhat
+    // Get governance contract address if not already set from deployments
     if (!governanceAddress) {
       governanceAddress = process.env.GOVERNANCE_ADDRESS;
       if (!governanceAddress) {
@@ -168,69 +174,102 @@ async function main() {
       console.log(`Using governance contract from .env: ${governanceAddress}`);
     }
     
-    // Verify the contract has code
-    const code = await provider.getCode(governanceAddress);
-    if (code === '0x' || code === '0x0') {
-      throw new Error(`No contract code found at address ${governanceAddress} on ${network}. Please verify the contract is deployed on this network.`);
-    }
-    
-    // Create contract instance
-    let governanceContract;
-    
-    // Use Hardhat's contract if available, otherwise create directly with ethers
-    if (hre && hre.ethers && hre.ethers.getContractAt) {
-      governanceContract = await hre.ethers.getContractAt('JustGovernanceUpgradeable', governanceAddress);
-      console.log('Using Hardhat contract instance');
-    } else {
-      governanceContract = new ethers.Contract(governanceAddress, governanceAbi, wallet);
-      console.log('Using direct ethers contract instance');
-    }
-    
-    // Check if wallet has ADMIN_ROLE
-    const hasAdminRole = await governanceContract.hasRole(ADMIN_ROLE, wallet.address);
-    if (!hasAdminRole) {
-      throw new Error(`The wallet ${wallet.address} does not have ADMIN_ROLE in the governance contract. Cannot update parameters.`);
-    }
-    console.log(`✅ Wallet has ADMIN_ROLE - can update governance parameters`);
-    
-    // Get voting duration constraints
-    const minVotingDuration = await governanceContract.minVotingDuration();
-    const maxVotingDuration = await governanceContract.maxVotingDuration();
-    console.log(`Voting duration constraints: min=${minVotingDuration.toString()} seconds, max=${maxVotingDuration.toString()} seconds (${Math.floor(Number(maxVotingDuration) / 86400)} days)`);
-    
-    // Get current parameters
-    const currentParams = await governanceContract.govParams();
-    
-    console.log("\nCurrent Governance Parameters:");
-    console.log("-".repeat(40));
-    
-    // Format and display current params with indexes
-    console.log(`[${PARAM_VOTING_DURATION}] ${paramNames[PARAM_VOTING_DURATION]}: ${currentParams.votingDuration.toString()} seconds (${(Number(currentParams.votingDuration) / 3600).toFixed(2)} hours)`);
-    console.log(`[${PARAM_QUORUM}] ${paramNames[PARAM_QUORUM]}: ${ethers.formatUnits(currentParams.quorum, 18)} tokens`);
-    console.log(`[${PARAM_TIMELOCK_DELAY}] ${paramNames[PARAM_TIMELOCK_DELAY]}: ${currentParams.timelockDelay.toString()} seconds (${(Number(currentParams.timelockDelay) / 60).toFixed(2)} minutes)`);
-    console.log(`[${PARAM_PROPOSAL_THRESHOLD}] ${paramNames[PARAM_PROPOSAL_THRESHOLD]}: ${ethers.formatUnits(currentParams.proposalCreationThreshold, 18)} tokens`);
-    console.log(`[${PARAM_PROPOSAL_STAKE}] ${paramNames[PARAM_PROPOSAL_STAKE]}: ${ethers.formatUnits(currentParams.proposalStake, 18)} tokens`);
-    console.log(`[${PARAM_DEFEATED_REFUND_PERCENTAGE}] ${paramNames[PARAM_DEFEATED_REFUND_PERCENTAGE]}: ${currentParams.defeatedRefundPercentage.toString()}%`);
-    console.log(`[${PARAM_CANCELED_REFUND_PERCENTAGE}] ${paramNames[PARAM_CANCELED_REFUND_PERCENTAGE]}: ${currentParams.canceledRefundPercentage.toString()}%`);
-    console.log(`[${PARAM_EXPIRED_REFUND_PERCENTAGE}] ${paramNames[PARAM_EXPIRED_REFUND_PERCENTAGE]}: ${currentParams.expiredRefundPercentage.toString()}%`);
-    
-    // Ask for parameter updates
-    console.log("\nDo you want to update parameters? (y/n)");
-    const readline = require('readline');
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout
-    });
-    
-    rl.question("Enter 'y' to update parameters or 'n' to exit: ", async (answer) => {
-      if (answer.toLowerCase() === 'y') {
-        await updateParameters(governanceContract, minVotingDuration, maxVotingDuration, currentParams, rl, network);
+    // Check if contract exists
+    try {
+      const code = await provider.getCode(governanceAddress);
+      if (code === '0x' || code === '0x0') {
+        if (network === 'localhost' || network === 'local' || network === 'hardhat') {
+          console.log(`⚠️ No contract code found at ${governanceAddress} on ${network}.`);
+          console.log("This might be normal if you're on a fresh local chain. Attempting to continue...");
+        } else {
+          throw new Error(`No contract code found at address ${governanceAddress} on ${network}. Please verify the contract is deployed.`);
+        }
       } else {
-        console.log("Exiting without updates");
-        rl.close();
-        process.exit(0);
+        console.log(`✅ Contract code verified at ${governanceAddress}`);
       }
-    });
+    } catch (error) {
+      if (network === 'localhost' || network === 'local' || network === 'hardhat') {
+        console.log(`⚠️ Error checking contract code: ${error.message}`);
+        console.log("This might be normal on local networks. Attempting to continue...");
+      } else {
+        throw error;
+      }
+    }
+    
+    // Create contract instance - use different approaches based on environment
+    if (typeof hre !== 'undefined' && hre.ethers && hre.ethers.getContractAt) {
+      try {
+        // Try to get the contract using Hardhat's helper
+        governanceContract = await hre.ethers.getContractAt("JustGovernanceUpgradeable", governanceAddress);
+        console.log("Using Hardhat contract instance");
+      } catch (error) {
+        console.log(`Error getting contract via Hardhat: ${error.message}`);
+        console.log("Falling back to direct ethers instantiation...");
+        governanceContract = new ethers.Contract(governanceAddress, governanceAbi, wallet);
+      }
+    } else {
+      // Direct instantiation for standalone mode
+      governanceContract = new ethers.Contract(governanceAddress, governanceAbi, wallet);
+      console.log("Using direct ethers contract instance");
+    }
+    
+    // Check role and governance parameters
+    try {
+      // Check if wallet has ADMIN_ROLE
+      const hasAdminRole = await governanceContract.hasRole(ADMIN_ROLE, wallet.address);
+      if (!hasAdminRole) {
+        console.log(`⚠️ WARNING: The wallet ${wallet.address} does not have ADMIN_ROLE in the governance contract.`);
+        console.log("You may not be able to update parameters.");
+      } else {
+        console.log(`✅ Wallet has ADMIN_ROLE - can update governance parameters`);
+      }
+      
+      // Get voting duration constraints
+      const minVotingDuration = await governanceContract.minVotingDuration();
+      const maxVotingDuration = await governanceContract.maxVotingDuration();
+      console.log(`Voting duration constraints: min=${minVotingDuration.toString()} seconds, max=${maxVotingDuration.toString()} seconds (${Math.floor(Number(maxVotingDuration) / 86400)} days)`);
+      
+      // Get current parameters
+      const currentParams = await governanceContract.govParams();
+      
+      console.log("\nCurrent Governance Parameters:");
+      console.log("-".repeat(40));
+      
+      // Format and display current params with indexes
+      console.log(`[${PARAM_VOTING_DURATION}] ${paramNames[PARAM_VOTING_DURATION]}: ${currentParams.votingDuration.toString()} seconds (${(Number(currentParams.votingDuration) / 3600).toFixed(2)} hours)`);
+      console.log(`[${PARAM_QUORUM}] ${paramNames[PARAM_QUORUM]}: ${ethers.formatUnits(currentParams.quorum, 18)} tokens`);
+      console.log(`[${PARAM_TIMELOCK_DELAY}] ${paramNames[PARAM_TIMELOCK_DELAY]}: ${currentParams.timelockDelay.toString()} seconds (${(Number(currentParams.timelockDelay) / 60).toFixed(2)} minutes)`);
+      console.log(`[${PARAM_PROPOSAL_THRESHOLD}] ${paramNames[PARAM_PROPOSAL_THRESHOLD]}: ${ethers.formatUnits(currentParams.proposalCreationThreshold, 18)} tokens`);
+      console.log(`[${PARAM_PROPOSAL_STAKE}] ${paramNames[PARAM_PROPOSAL_STAKE]}: ${ethers.formatUnits(currentParams.proposalStake, 18)} tokens`);
+      console.log(`[${PARAM_DEFEATED_REFUND_PERCENTAGE}] ${paramNames[PARAM_DEFEATED_REFUND_PERCENTAGE]}: ${currentParams.defeatedRefundPercentage.toString()}%`);
+      console.log(`[${PARAM_CANCELED_REFUND_PERCENTAGE}] ${paramNames[PARAM_CANCELED_REFUND_PERCENTAGE]}: ${currentParams.canceledRefundPercentage.toString()}%`);
+      console.log(`[${PARAM_EXPIRED_REFUND_PERCENTAGE}] ${paramNames[PARAM_EXPIRED_REFUND_PERCENTAGE]}: ${currentParams.expiredRefundPercentage.toString()}%`);
+      
+      // Ask for parameter updates
+      console.log("\nDo you want to update parameters? (y/n)");
+      const readline = require('readline');
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+      });
+      
+      rl.question("Enter 'y' to update parameters or 'n' to exit: ", async (answer) => {
+        if (answer.toLowerCase() === 'y') {
+          await updateParameters(governanceContract, minVotingDuration, maxVotingDuration, currentParams, rl, network);
+        } else {
+          console.log("Exiting without updates");
+          rl.close();
+          process.exit(0);
+        }
+      });
+    } catch (error) {
+      console.error(`\n❌ Error checking contract parameters: ${error.message}`);
+      if (error.data) {
+        console.error("Contract error data:", error.data);
+      }
+      console.log("This may indicate the contract is not properly deployed or initialized on this network.");
+      process.exit(1);
+    }
     
   } catch (error) {
     console.error("\n❌ Fatal error:", error.message);
@@ -304,97 +343,125 @@ Choice: `, (paramChoice) => {
             
             console.log(`\nUpdating ${paramNames[paramType]}...`);
             
-            // Get gas estimate
-            const gasEstimate = await contract.updateGovParam.estimateGas(paramType, newValue);
-            console.log(`Gas estimate: ${gasEstimate.toString()}`);
-            
-            // Get current gas settings
-            const feeData = await contract.runner.provider.getFeeData();
-            const txOptions = {
-              // Add a buffer to the gas estimate
-              gasLimit: gasEstimate * 120n / 100n,
-              maxFeePerGas: feeData.maxFeePerGas ? feeData.maxFeePerGas * 110n / 100n : undefined,
-              maxPriorityFeePerGas: feeData.maxPriorityFeePerGas ? feeData.maxPriorityFeePerGas * 110n / 100n : undefined
-            };
-            
-            console.log(`Using gas settings: ${JSON.stringify({
-              gasLimit: txOptions.gasLimit.toString(),
-              maxFeePerGas: txOptions.maxFeePerGas ? ethers.formatUnits(txOptions.maxFeePerGas, 'gwei') + ' gwei' : 'undefined',
-              maxPriorityFeePerGas: txOptions.maxPriorityFeePerGas ? ethers.formatUnits(txOptions.maxPriorityFeePerGas, 'gwei') + ' gwei' : 'undefined'
-            }, null, 2)}`);
-            
-            // Execute the transaction
-            const tx = await contract.updateGovParam(paramType, newValue, txOptions);
-            console.log(`Transaction sent: ${tx.hash}`);
-            
-            // Network-specific explorers
-            if (network === 'sepolia') {
-              console.log(`Track transaction: https://sepolia.etherscan.io/tx/${tx.hash}`);
-            } else if (network === 'mainnet') {
-              console.log(`Track transaction: https://etherscan.io/tx/${tx.hash}`);
-            } else {
-              console.log(`Transaction sent to ${network}`);
-            }
-            
-            const receipt = await tx.wait();
-            console.log(`✅ Transaction confirmed in block ${receipt.blockNumber}`);
-            
-            // Get updated parameter to verify
-            const updatedParams = await contract.govParams();
-            let currentValue, formattedNewValue, formattedUpdatedValue;
-            
-            switch (paramType) {
-              case PARAM_VOTING_DURATION:
-                currentValue = currentParams.votingDuration;
-                formattedNewValue = newValue.toString();
-                formattedUpdatedValue = updatedParams.votingDuration.toString();
-                break;
-              case PARAM_QUORUM:
-                currentValue = currentParams.quorum;
-                formattedNewValue = ethers.formatUnits(newValue, 18);
-                formattedUpdatedValue = ethers.formatUnits(updatedParams.quorum, 18);
-                break;
-              case PARAM_TIMELOCK_DELAY:
-                currentValue = currentParams.timelockDelay;
-                formattedNewValue = newValue.toString();
-                formattedUpdatedValue = updatedParams.timelockDelay.toString();
-                break;
-              case PARAM_PROPOSAL_THRESHOLD:
-                currentValue = currentParams.proposalCreationThreshold;
-                formattedNewValue = ethers.formatUnits(newValue, 18);
-                formattedUpdatedValue = ethers.formatUnits(updatedParams.proposalCreationThreshold, 18);
-                break;
-              case PARAM_PROPOSAL_STAKE:
-                currentValue = currentParams.proposalStake;
-                formattedNewValue = ethers.formatUnits(newValue, 18);
-                formattedUpdatedValue = ethers.formatUnits(updatedParams.proposalStake, 18);
-                break;
-              case PARAM_DEFEATED_REFUND_PERCENTAGE:
-                currentValue = currentParams.defeatedRefundPercentage;
-                formattedNewValue = newValue.toString();
-                formattedUpdatedValue = updatedParams.defeatedRefundPercentage.toString();
-                break;
-              case PARAM_CANCELED_REFUND_PERCENTAGE:
-                currentValue = currentParams.canceledRefundPercentage;
-                formattedNewValue = newValue.toString();
-                formattedUpdatedValue = updatedParams.canceledRefundPercentage.toString();
-                break;
-              case PARAM_EXPIRED_REFUND_PERCENTAGE:
-                currentValue = currentParams.expiredRefundPercentage;
-                formattedNewValue = newValue.toString();
-                formattedUpdatedValue = updatedParams.expiredRefundPercentage.toString();
-                break;
-            }
-            
-            console.log(`Parameter update summary for ${paramNames[paramType]}:`);
-            console.log(`- Previous value: ${currentValue.toString()}`);
-            console.log(`- New value set: ${formattedNewValue}`);
-            console.log(`- Updated value: ${formattedUpdatedValue}`);
-            
-            if (formattedNewValue !== formattedUpdatedValue) {
-              console.warn("⚠️ New value doesn't match updated value. Verification failed.");
-            } else {
-              console.log("✅ Parameter successfully updated and verified!");
+            try {
+              // Get gas estimate - with some error handling for local networks
+              let gasEstimate;
+              try {
+                gasEstimate = await contract.updateGovParam.estimateGas(paramType, newValue);
+                console.log(`Gas estimate: ${gasEstimate.toString()}`);
+              } catch (error) {
+                console.log(`Warning: Failed to estimate gas. Using default gas limit. Error: ${error.message}`);
+                gasEstimate = 300000n; // Default reasonable gas limit
+              }
+              
+              // Get current gas settings
+              let txOptions = {};
+              try {
+                const feeData = await contract.runner.provider.getFeeData();
+                
+                // For local dev chains, keep it simple
+                if (network === 'localhost' || network === 'local' || network === 'hardhat') {
+                  txOptions = {
+                    gasLimit: gasEstimate || 300000n
+                  };
+                } else {
+                  // For real networks, add gas buffer and use EIP-1559 if available
+                  txOptions = {
+                    gasLimit: gasEstimate ? gasEstimate * 120n / 100n : 300000n,
+                    maxFeePerGas: feeData.maxFeePerGas ? feeData.maxFeePerGas * 110n / 100n : undefined,
+                    maxPriorityFeePerGas: feeData.maxPriorityFeePerGas ? feeData.maxPriorityFeePerGas * 110n / 100n : undefined
+                  };
+                }
+                
+                console.log("Using gas settings:", JSON.stringify({
+                  gasLimit: txOptions.gasLimit?.toString() || "default",
+                  maxFeePerGas: txOptions.maxFeePerGas ? ethers.formatUnits(txOptions.maxFeePerGas, 'gwei') + ' gwei' : 'not set',
+                  maxPriorityFeePerGas: txOptions.maxPriorityFeePerGas ? ethers.formatUnits(txOptions.maxPriorityFeePerGas, 'gwei') + ' gwei' : 'not set'
+                }, null, 2));
+              } catch (error) {
+                console.log(`Warning: Error getting fee data. Using default gas settings. Error: ${error.message}`);
+                txOptions = { gasLimit: 300000n };
+              }
+              
+              // Execute the transaction
+              console.log("Sending transaction...");
+              const tx = await contract.updateGovParam(paramType, newValue, txOptions);
+              console.log(`Transaction sent: ${tx.hash}`);
+              
+              // Network-specific explorers
+              if (network === 'sepolia') {
+                console.log(`Track transaction: https://sepolia.etherscan.io/tx/${tx.hash}`);
+              } else if (network === 'mainnet') {
+                console.log(`Track transaction: https://etherscan.io/tx/${tx.hash}`);
+              } else {
+                console.log(`Transaction sent on ${network} network`);
+              }
+              
+              const receipt = await tx.wait();
+              console.log(`✅ Transaction confirmed in block ${receipt.blockNumber}`);
+              
+              // Get updated parameter to verify
+              const updatedParams = await contract.govParams();
+              let currentValue, formattedNewValue, formattedUpdatedValue;
+              
+              switch (paramType) {
+                case PARAM_VOTING_DURATION:
+                  currentValue = currentParams.votingDuration;
+                  formattedNewValue = newValue.toString();
+                  formattedUpdatedValue = updatedParams.votingDuration.toString();
+                  break;
+                case PARAM_QUORUM:
+                  currentValue = currentParams.quorum;
+                  formattedNewValue = ethers.formatUnits(newValue, 18);
+                  formattedUpdatedValue = ethers.formatUnits(updatedParams.quorum, 18);
+                  break;
+                case PARAM_TIMELOCK_DELAY:
+                  currentValue = currentParams.timelockDelay;
+                  formattedNewValue = newValue.toString();
+                  formattedUpdatedValue = updatedParams.timelockDelay.toString();
+                  break;
+                case PARAM_PROPOSAL_THRESHOLD:
+                  currentValue = currentParams.proposalCreationThreshold;
+                  formattedNewValue = ethers.formatUnits(newValue, 18);
+                  formattedUpdatedValue = ethers.formatUnits(updatedParams.proposalCreationThreshold, 18);
+                  break;
+                case PARAM_PROPOSAL_STAKE:
+                  currentValue = currentParams.proposalStake;
+                  formattedNewValue = ethers.formatUnits(newValue, 18);
+                  formattedUpdatedValue = ethers.formatUnits(updatedParams.proposalStake, 18);
+                  break;
+                case PARAM_DEFEATED_REFUND_PERCENTAGE:
+                  currentValue = currentParams.defeatedRefundPercentage;
+                  formattedNewValue = newValue.toString();
+                  formattedUpdatedValue = updatedParams.defeatedRefundPercentage.toString();
+                  break;
+                case PARAM_CANCELED_REFUND_PERCENTAGE:
+                  currentValue = currentParams.canceledRefundPercentage;
+                  formattedNewValue = newValue.toString();
+                  formattedUpdatedValue = updatedParams.canceledRefundPercentage.toString();
+                  break;
+                case PARAM_EXPIRED_REFUND_PERCENTAGE:
+                  currentValue = currentParams.expiredRefundPercentage;
+                  formattedNewValue = newValue.toString();
+                  formattedUpdatedValue = updatedParams.expiredRefundPercentage.toString();
+                  break;
+              }
+              
+              console.log(`Parameter update summary for ${paramNames[paramType]}:`);
+              console.log(`- Previous value: ${currentValue.toString()}`);
+              console.log(`- New value set: ${formattedNewValue}`);
+              console.log(`- Updated value: ${formattedUpdatedValue}`);
+              
+              if (formattedNewValue !== formattedUpdatedValue) {
+                console.warn("⚠️ New value doesn't match updated value. Verification failed.");
+              } else {
+                console.log("✅ Parameter successfully updated and verified!");
+              }
+            } catch (txError) {
+              console.error(`❌ Transaction error: ${txError.message}`);
+              if (txError.data) {
+                console.error("Contract error data:", txError.data);
+              }
             }
             
             // Continue updating parameters
@@ -415,29 +482,33 @@ Choice: `, (paramChoice) => {
   const result = await paramPrompt();
   if (result === null) {
     // Get final parameters to display
-    const finalParams = await contract.govParams();
+    try {
+      const finalParams = await contract.govParams();
+      
+      console.log("\nFinal Governance Parameters:");
+      console.log("-".repeat(40));
+      
+      console.log(`${paramNames[PARAM_VOTING_DURATION]}: ${finalParams.votingDuration.toString()} seconds (${(Number(finalParams.votingDuration) / 3600).toFixed(2)} hours)`);
+      console.log(`${paramNames[PARAM_QUORUM]}: ${ethers.formatUnits(finalParams.quorum, 18)} tokens`);
+      console.log(`${paramNames[PARAM_TIMELOCK_DELAY]}: ${finalParams.timelockDelay.toString()} seconds (${(Number(finalParams.timelockDelay) / 60).toFixed(2)} minutes)`);
+      console.log(`${paramNames[PARAM_PROPOSAL_THRESHOLD]}: ${ethers.formatUnits(finalParams.proposalCreationThreshold, 18)} tokens`);
+      console.log(`${paramNames[PARAM_PROPOSAL_STAKE]}: ${ethers.formatUnits(finalParams.proposalStake, 18)} tokens`);
+      console.log(`${paramNames[PARAM_DEFEATED_REFUND_PERCENTAGE]}: ${finalParams.defeatedRefundPercentage.toString()}%`);
+      console.log(`${paramNames[PARAM_CANCELED_REFUND_PERCENTAGE]}: ${finalParams.canceledRefundPercentage.toString()}%`);
+      console.log(`${paramNames[PARAM_EXPIRED_REFUND_PERCENTAGE]}: ${finalParams.expiredRefundPercentage.toString()}%`);
+      
+      console.log("\n✅ All governance parameter updates completed!");
+    } catch (error) {
+      console.error(`Error fetching final parameters: ${error.message}`);
+    }
     
-    console.log("\nFinal Governance Parameters:");
-    console.log("-".repeat(40));
-    
-    console.log(`${paramNames[PARAM_VOTING_DURATION]}: ${finalParams.votingDuration.toString()} seconds (${(Number(finalParams.votingDuration) / 3600).toFixed(2)} hours)`);
-    console.log(`${paramNames[PARAM_QUORUM]}: ${ethers.formatUnits(finalParams.quorum, 18)} tokens`);
-    console.log(`${paramNames[PARAM_TIMELOCK_DELAY]}: ${finalParams.timelockDelay.toString()} seconds (${(Number(finalParams.timelockDelay) / 60).toFixed(2)} minutes)`);
-    console.log(`${paramNames[PARAM_PROPOSAL_THRESHOLD]}: ${ethers.formatUnits(finalParams.proposalCreationThreshold, 18)} tokens`);
-    console.log(`${paramNames[PARAM_PROPOSAL_STAKE]}: ${ethers.formatUnits(finalParams.proposalStake, 18)} tokens`);
-    console.log(`${paramNames[PARAM_DEFEATED_REFUND_PERCENTAGE]}: ${finalParams.defeatedRefundPercentage.toString()}%`);
-    console.log(`${paramNames[PARAM_CANCELED_REFUND_PERCENTAGE]}: ${finalParams.canceledRefundPercentage.toString()}%`);
-    console.log(`${paramNames[PARAM_EXPIRED_REFUND_PERCENTAGE]}: ${finalParams.expiredRefundPercentage.toString()}%`);
-    
-    console.log("\n✅ All governance parameter updates completed!");
     rl.close();
     process.exit(0);
   }
 }
 
-// Check if running directly or being imported
+// Print instructions and run if called directly
 if (require.main === module) {
-  // Print setup instructions
   console.log(`
 `);
 
